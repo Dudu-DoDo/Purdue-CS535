@@ -1,0 +1,282 @@
+
+struct VertexDataInput {
+	float4 vertex: POSITION;
+	float3 normal: NORMAL;
+	float3 color: COLOR;
+  float2 texCoord : TEXCOORD;
+};
+
+struct VertexDataOutput {
+	float4 projv  : POSITION;
+	float3 normal: TEXCOORD0;
+	float3 vxyz: TEXCOORD1;
+	float3 color : COLOR;
+  	float2 vtexCoord : TEXCOORD2;
+};
+
+struct PixelDataOutput {
+	float4 color : COLOR;
+};
+
+VertexDataOutput VertexMain(
+	VertexDataInput vdi, 
+  uniform float4x4 modelViewProj,
+  uniform float Mf) {
+
+  VertexDataOutput ret;
+
+  ret.projv = mul(modelViewProj, vdi.vertex);
+  
+  ret.normal = vdi.normal;
+  ret.vxyz = vdi.vertex.xyz;
+  ret.color = vdi.color;
+  ret.vtexCoord = vdi.texCoord;
+  return ret;
+
+}
+
+TRIANGLE void GeometryMain(AttribArray<VertexDataOutput> tverts,
+	uniform float4x4 modelViewProj) {
+
+	emitVertex(tverts[0]);
+	emitVertex(tverts[1]);
+	emitVertex(tverts[2]);
+	return;
+
+}
+
+struct all_faces{
+	float3x3 face[6];
+};
+
+
+float gnd_plane_height;
+float4x4 gb_box0, gb_box1, gb_box2;
+float3 gb_box0_color, gb_box1_color, gb_box2_color;
+sampler2D texture;
+
+
+bool intersect_billboard(float3x3 bb, float3 ro, float3 rd, out float ot)
+{
+	float3 p0 = bb[0];
+	float3 p1 = bb[1];
+	float3 p2 = bb[2];
+	float3 n = normalize(cross(p1-p0,p2-p0)); 
+	
+	float t = -dot(ro - p0,n)/dot(rd,n);
+	float3 p = ro + t * rd - p0;
+	float3 x = p2 - p0;
+	float3 y = p1 - p0;
+	float u = dot(p,normalize(x)) / length(x);
+	float v = dot(p,normalize(y)) / length(y);
+	
+	if(u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0)
+	{
+		return false;
+	}
+
+	if(tex2D(texture, float2(u,v)).r > 0.0)
+		return false;
+
+	ot = t;
+	return true;
+}
+
+all_faces get_all_faces(float4x4 box)
+{
+	float3 boxCorner = box[0].xyz;
+	float3 boxX = box[1].xyz;
+	float3 boxY = box[2].xyz;
+	float3 boxZ = box[3].xyz;
+
+	all_faces boxFace;
+	boxFace.face[0] = float3x3(boxCorner, boxCorner + boxX, boxCorner + boxY);	
+	boxFace.face[1] = float3x3(boxCorner + boxZ, boxCorner + boxX + boxZ, boxCorner + boxY + boxZ);	
+	boxFace.face[2] = float3x3(boxCorner + boxY, boxCorner + boxY + boxZ, boxCorner + boxY + boxX);	
+	boxFace.face[3] = float3x3(boxCorner, boxCorner + boxZ, boxCorner + boxX);	
+	boxFace.face[4] = float3x3(boxCorner, boxCorner + boxY, boxCorner + boxZ);	
+	boxFace.face[5] = float3x3(boxCorner + boxX, boxCorner + boxY + boxX, boxCorner + boxZ + boxX);	
+	return boxFace;
+}
+
+void ray_scene_intersect(float3 ro, float3 rd, out float t, out float3 color)
+{
+	float eps = 1e-2;
+	float tmp_t;
+	color = 0.8;
+
+	all_faces box0Faces, box1Faces, box2Faces;
+	box0Faces = get_all_faces(gb_box0);
+	box1Faces = get_all_faces(gb_box1);
+	box2Faces = get_all_faces(gb_box2);
+
+	t = (gnd_plane_height - ro.y) / rd.y;
+
+	for(int i = 0; i < 6; ++i)
+	{
+		if(intersect_billboard(box0Faces.face[i], ro, rd, tmp_t))
+		{
+			if(tmp_t > 0.0 && tmp_t < t && tmp_t > eps)
+			{
+				t = tmp_t;
+				color = gb_box0_color;
+			}
+		}
+		
+		if(intersect_billboard(box1Faces.face[i], ro, rd, tmp_t))
+		{
+			if(tmp_t > 0.0 && tmp_t < t && tmp_t > eps)
+			{
+				t = tmp_t;
+				color = gb_box1_color;
+			}
+		}
+
+		if(intersect_billboard(box2Faces.face[i], ro, rd, tmp_t))
+		{
+			if(tmp_t > 0.0 && tmp_t < t && tmp_t > eps)
+			{
+				t = tmp_t;
+				color = gb_box2_color;
+			}
+		}
+	}
+}
+
+float point_light_shadow(float3 lightPos, float3 curPos)
+{
+	all_faces box0Faces, box1Faces, box2Faces;
+	box0Faces = get_all_faces(gb_box0);
+	box1Faces = get_all_faces(gb_box1);
+	box2Faces = get_all_faces(gb_box2);
+
+	float3 rd = curPos - lightPos;	
+	for(int i = 0; i < 6; ++i) 
+	{
+		float t = 0;
+		float eps = 1e-6;
+		if(intersect_billboard(box0Faces.face[i], curPos - rd * eps, rd, t))
+		{	
+			if(length(curPos + rd * t - lightPos) < length(lightPos - curPos))
+				return 0.0f;
+		}
+		
+		if(intersect_billboard(box1Faces.face[i], curPos - rd * eps, rd, t))
+		{
+			if(length(curPos + rd * t - lightPos) < length(lightPos - curPos))
+				return 0.0f;
+		}
+
+		if(intersect_billboard(box2Faces.face[i], curPos - rd * eps, rd, t))
+		{
+			if(length(curPos + rd * t - lightPos) < length(lightPos - curPos))
+				return 0.0f;
+		}
+	}
+
+	return 1.0f;
+}
+
+float soft_shadow(float3 lightPos, float3 curPos)
+{
+	float3 dx = float3(1.0, 0.0, 0.0) * 2.0;
+	float3 dz = float3(0.0, 0.0, 1.0) * 2.0;
+	
+	float shadow = 0.0;
+	int samples = 16;
+	for(int r = 0; r < samples; ++r)
+	{
+		for(int c = 0; c < samples; ++c)
+		{
+			float3 lpv = dx * r + dz * c;
+			float3 curLightPos = lightPos + lpv;
+			shadow += point_light_shadow(curLightPos, curPos);
+		}
+	}
+	return shadow / ((float)samples * (float)samples);
+}
+
+PixelDataOutput FragmentMain(VertexDataOutput pdi, 
+  uniform float3 light_position,
+  uniform float3 ppc_C,
+  uniform float4x4 box0,	
+  uniform float4x4 box1,
+  uniform float4x4 box2,
+  uniform float3 box0Color, 
+  uniform float3 box1Color,
+  uniform float3 box2Color,
+  uniform float groundHeight,	
+  uniform int is_cube,      
+  uniform int is_cubemap,   
+  uniform int is_gnd,    
+  uniform sampler2D tex,    
+  uniform samplerCUBE env     
+  ) {
+
+  gnd_plane_height = groundHeight;
+  gb_box0 = box0; 
+  gb_box1 = box1;
+  gb_box2 = box2;
+  texture = topTex;
+  gb_box0_color = box0Color;
+  gb_box1_color = box1Color;
+  gb_box2_color = box2Color;
+
+  PixelDataOutput ret;
+  float ka = 0.3f;
+  float alpha = 1.0;
+  float3 pc = pdi.color;
+  
+  float3 viewdir = ppc_C - pdi.vxyz;
+  float3 lightdir = light_position - pdi.vxyz;
+  float3 tmp_normal = normalize(pdi.normal);
+
+  if (is_gnd) {
+	tmp_normal = float3(0.0,1.0,0.0);
+  }
+  float kd = max(0.0f, dot(normalize(lightdir), tmp_normal));
+
+  if(is_cube > 0) 
+  {	 
+	  float4 texColor = tex2D(topTex, pdi.vtexCoord);
+	  alpha = texColor.a;
+
+	  if(texColor.r > 0.0) 
+	  {
+		  float3 ro = pdi.vxyz;
+		  float3 rd = pdi.vxyz - ppc_C;
+		  float t;
+		  float3 color;
+
+		  ray_scene_intersect(ro, rd, t, color);
+		  pc = color;
+		  
+		  if(length(color - 0.8) < 1e-4)
+		  {
+			  ro = ro + rd * t;
+			  kd = max(0.0, dot(normalize(light_position - ro), float3(0.0,1.0,0.0)));
+			  float ksd = soft_shadow(light_position, ro);
+			  pc = ksd * pc;
+		  }		  
+	  }
+  }
+  else  
+  {
+	  alpha = 1.0;
+  }
+
+  	float3 phongColor =  pc * (ka + (1.0f - ka) * kd);
+	float shadow = 1.0;
+	if (tex2D(tex, pdi.vtexCoord).r < 0.9) {
+		soft_shadow(light_position, pdi.vxyz);
+	}
+	phongColor = shadow * phongColor;
+
+	if(is_cubemap) 
+	{
+		phongColor = texCUBE(env, -pdi.vxyz).rgb;
+		alpha =1.0;
+	}
+  	ret.color = float4(clamp(phongColor ,0.0,1.0),alpha);
+  	return ret;
+}
